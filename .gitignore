@@ -1,0 +1,12 @@
+# Data PC dan cadangan pengaturan: jangan pernah masuk repo
+registrasi/
+*.csv
+_cadangan-pengaturan/
+*.bak
+*.log
+# Rahasia
+.env
+*.env
+*token*
+*password*
+*secret*

@@ -1,0 +1,4 @@
+# Jangan ubah akhir baris: batch (.cmd) harus CRLF dan disimpan apa adanya
+*.cmd -text
+*.ps1 -text
+*.md text

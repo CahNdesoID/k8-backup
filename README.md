@@ -1,74 +1,100 @@
 # k8-backup
 
-Pemasangan UrBackup Client di PC Kedaton 8 Hotel dengan **satu baris perintah per PC**, tanpa flashdisk.
-Repo ini **private**. Isinya hanya skrip; tidak ada password atau token di dalamnya.
+Pasang, daftarkan, dan rawat **UrBackup Client** di PC Kedaton 8 Hotel lewat satu baris perintah per PC,
+tanpa flashdisk dan tanpa token. Cocok untuk Windows 8.1, 10, dan 11.
 
 ```
-k8.cmd                        satu file: minta Administrator, pasang UrBackup Client, buka firewall
-                              khusus server backup, kirim data PC ke server lewat LAN
-server/terima-registrasi.ps1  penerima di server (192.168.1.88), dijalankan selama rollout saja
+k8.cmd                       pembuka menu (klik dua kali) - isinya satu baris yang sama dengan di bawah
+k8.ps1                       menu di PC: pasang/daftar, sinkron IP, muat ulang koneksi, cek status
+server/k8-server.ps1         penerima di server (192.168.1.88): daftar PC + sinkron IP, dijaga password
+server/jalankan-server.cmd   pembuka penerima (minta Administrator, buka firewall sementara)
 ```
 
-## 1. Sekali saja: token baca-saja untuk PC
+## Satu baris untuk tiap PC
 
-Dibuat sendiri lewat web GitHub (bukan lewat CLI, dan jangan ditempel ke chat):
-
-1. GitHub -> Settings -> Developer settings -> Personal access tokens -> **Fine-grained tokens** -> Generate new token
-2. Repository access: **Only select repositories** -> pilih repo ini saja
-3. Permissions -> Repository permissions -> **Contents: Read-only** (Metadata read otomatis ikut)
-4. Expiration: **14 hari** (cukup untuk rollout)
-5. Setelah semua PC selesai: **Revoke** token itu.
-
-Token ini hanya bisa membaca repo ini. Tetap perlakukan seperti password: jangan dicetak, jangan difoto, jangan disimpan di PC.
-
-## 2. Di server (sebelum PC pertama)
-
-PowerShell sebagai Administrator, di folder tempat file ini berada:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\server\terima-registrasi.ps1 -BukaFirewall
-```
-
-- Mendengarkan TCP 8088, hanya dari `192.168.6.*`. Aturan firewall dibuat dan dihapus otomatis.
-- Menulis `E:\Repo\Divisi\_setup\registrasi\<Divisi>_<Nama>.csv` (ganti dengan `-Tujuan` kalau folder divisi pindah).
-- Berhenti sendiri setelah 240 menit (`-MenitMaks`) atau dengan Ctrl+C.
-- Biarkan jendelanya terbuka selama PC dipasang.
-
-## 3. Di tiap PC (cmd biasa, bukan PowerShell)
-
-Ganti `TOKEN`, `USER`, `REPO`, lalu Divisi dan Nama:
+Tempel di **cmd atau PowerShell** (keduanya bisa), lalu jawab **Yes** di jendela UAC:
 
 ```
-curl -fsSL -H "Authorization: Bearer TOKEN" -H "Accept: application/vnd.github.raw+json" "https://api.github.com/repos/USER/REPO/contents/k8.cmd" -o "%TEMP%\k8.cmd" && "%TEMP%\k8.cmd" Housekeeping Rendi
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=3072; irm https://raw.githubusercontent.com/CahNdesoID/k8-backup/main/k8.ps1 | iex"
 ```
 
-- Jawab **Yes** di jendela UAC. Cek nama di layar, tekan **Y**. Selesai kalau muncul `=== SELESAI ===`.
-- `Rendi` otomatis menjadi `RendiBackup` (akhiran Backup ditambahkan kalau belum ada).
-- Divisi: Housekeeping, IT, Marketing, Purchasing, Finance, HRD, HR, Corsec, Legal, Senior Manager, Audit, Accounting, Kasir, atau `Mandiri`.
-  Divisi dengan spasi: `"Senior Manager"` atau `Senior-Manager`.
-- `-f` membuat curl gagal kalau token salah, dan `&&` mencegah file error dijalankan.
-- `curl.exe` ada di Windows 10 1803 ke atas. Cadangan untuk PC yang tidak punya curl (belum diuji):
+Menu yang muncul:
+
+| Menu | Fungsi |
+|---|---|
+| 1 Pasang / daftar | Unduh dan pasang UrBackup Client, buka firewall khusus server backup, kirim data PC ke server |
+| 2 Sinkron IP | PC berganti IP: kirim IP terbaru, server memperbarui catatan dan alamat di UrBackup |
+| 3 Muat ulang koneksi | PC pernah tersambung ke server lain/percobaan: lupakan server lama, siap dipercaya server kantor |
+| 4 Cek status | Layanan, firewall, jangkauan server, identitas yang tersimpan |
+
+Password pemasangan ditanya saat menu 1 atau 2 dipakai (tersembunyi, tidak disimpan). Minta ke IT.
+
+Kalau GitHub tidak terjangkau dari PC itu, ambil dari server (penerima harus sedang aktif):
 
 ```
-powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Headers @{Authorization='Bearer TOKEN';Accept='application/vnd.github.raw+json'} -Uri 'https://api.github.com/repos/USER/REPO/contents/k8.cmd' -OutFile \"$env:TEMP\k8.cmd\"" && "%TEMP%\k8.cmd" Housekeeping Rendi
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm http://192.168.1.88:8088/k8.ps1 | iex"
 ```
 
-Pasang versi tertentu (tidak ikut berubah kalau repo diedit): tambahkan `?ref=v1` setelah `k8.cmd` di URL.
+## Di server (192.168.1.88)
 
-## 4. Setelah PC terpasang
+1. Salin folder ini ke server (RDP, copy-paste folder), mis. `E:\Repo\Divisi\_setup\k8-backup\`.
+   `k8.ps1` harus tetap berada satu tingkat di atas folder `server` (untuk jalur cadangan LAN).
+2. Klik dua kali `server\jalankan-server.cmd` (atau `powershell -ExecutionPolicy Bypass -File server\k8-server.ps1 -BukaFirewall`).
+3. Ketik password pemasangan dua kali. Pakai yang panjang (10 karakter atau lebih), huruf/angka/simbol ASCII tanpa spasi.
+4. Biarkan jendelanya terbuka. Berhenti sendiri setelah 240 menit (`-MenitMaks`, `0` = tanpa batas) atau Ctrl+C.
+   Aturan firewall yang dibuat ikut dihapus saat berhenti.
 
-Di server: jalankan `siapkan-divisi.ps1` (membaca folder registrasi), lalu tambahkan PC ke UrBackup lewat IP
-(hari **Minggu**, supaya backup pertamanya, yang otomatis full, tidak jatuh di jam kerja).
+Hasilnya: `E:\Repo\Divisi\_setup\registrasi\<Divisi>_<Nama>.csv` (ubah dengan `-Tujuan`), dibaca oleh
+`siapkan-divisi.ps1` dan `cek-koneksi.ps1`.
 
-## Catatan keamanan
+Penerima ini **hanya perlu menyala** saat memasang PC dan saat ada PC yang berganti IP. Password tidak disimpan
+di disk, jadi dimasukkan lagi tiap dijalankan.
 
-- Server hanya menerima: nama PC, divisi, nama orang, IP, label dan ukuran drive, nama folder tingkat atas `C:\`.
-  Isi file tidak dibaca. Token tidak pernah dikirim ke server.
-- Penerima memakai HTTP biasa di LAN dan menolak alamat di luar `192.168.6.*`. Jangan dibuka ke internet.
-- Firewall PC dibuka hanya untuk `192.168.1.88` (TCP 35621, 35623, UDP 35622).
-- Jangan commit file registrasi (`*.csv`), cadangan pengaturan, atau apa pun berisi password. Lihat `.gitignore`.
+## Kasus yang sering
 
-## Mengubah k8.cmd
+**PC/laptop pernah tersambung ke UrBackup saat uji coba.** Menu 3. Layanan UrBackup dihentikan sebentar, tiga file
+kepercayaan server (`server_idents.txt`, `session_idents.txt`, `new_server_idents.txt`) diganti nama menjadi
+`.bak-<waktu>` (tidak dihapus), layanan dijalankan lagi, lalu menunggu server kantor menghubungi dan dipercaya.
+Client UrBackup hanya mempercayai server pertama yang menghubunginya, jadi setelah reset ia menerima server kantor.
+Untuk mengembalikan, hentikan layanan dan ganti nama file `.bak-...` kembali.
 
-Bagian PowerShell ada di bawah baris `#K8PS#` di dalam `k8.cmd`. File harus tetap berakhir baris **CRLF**
-(`.gitattributes` sudah mengunci ini). Periksa sebelum push: `git ls-files --eol k8.cmd` harus menampilkan `i/crlf`.
+**IP PC berubah.** Menu 2. Server memperbarui CSV. Kalau PC itu **sudah** ditambahkan di UrBackup lewat alamat IP,
+alamat lama diganti alamat baru (alamat yang dipakai adalah alamat sumber permintaan, bukan yang diklaim PC).
+PC yang belum ada di UrBackup **tidak pernah ditambahkan otomatis**. Alamat lama yang tercatat milik PC lain
+dipertahankan. Kalau PC ditambahkan lewat nama, tidak ada yang perlu diubah.
+Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tidak berubah lagi.
+
+**Ganti PC untuk orang yang sama.** Menu 1 di PC baru dengan Divisi/Nama yang sama. Server menandai `DIGANTI`.
+
+## Keamanan
+
+- Repo ini **public** agar linknya tanpa token. Isinya hanya skrip: tidak ada password/token. Yang terlihat publik:
+  IP LAN server (`192.168.1.88`) dan nama divisi.
+- Password tidak pernah dikirim lewat jaringan. PC mengambil kode sekali pakai dari server (`/nonce`, 60 detik) lalu
+  mengirim HMAC-SHA256 dari `jalur + isi permintaan`. Sadapan tidak bisa dipakai ulang, isi tidak bisa diubah.
+- 5 kali salah dari satu alamat dalam 10 menit = alamat itu dikunci 10 menit.
+- Server hanya menerima dari `192.168.6.*` (`-Izinkan`), badan maks 8 KB, semua isian divalidasi
+  (divisi dari daftar baku, nama huruf/angka, IP IPv4 yang sah). Nama file CSV dibentuk dari nilai yang sudah lolos.
+- Data yang dikirim: nama PC, divisi, nama orang, IP, label dan ukuran drive, nama folder tingkat atas `C:\`.
+  Isi file tidak dibaca.
+- Firewall PC dibuka hanya untuk `192.168.1.88` (TCP 35621, 35623; UDP 35622).
+- **Siapa pun yang bisa push ke repo ini bisa menjalankan kode di PC kantor.** Aktifkan 2FA di akun GitHub pemilik repo,
+  dan jangan beri akses tulis ke orang lain.
+- Jangan commit `*.csv`, `registrasi/`, cadangan pengaturan, atau apa pun berisi password (lihat `.gitignore`).
+
+## Kompatibilitas dan batas pengujian
+
+- Windows 8.1 (PowerShell 4.0, .NET 4.5.1), Windows 10 dan 11 (PowerShell 5.1). Tanpa `curl`, tanpa fitur PowerShell 5+.
+  TLS 1.2 dipaksa untuk unduhan HTTPS.
+- Server: Windows Server 2016 (PowerShell 5.1), memakai `HttpListener`.
+- Diuji pada PowerShell 7 (Linux) dengan server UrBackup tiruan: validasi input, password benar/salah/replay/kunci,
+  sinkron IP ke API UrBackup (tambah/hapus alamat, sesi habis, UrBackup mati), reset koneksi, menu terprogram,
+  jalur `irm | iex`. **Belum diuji** di Windows sungguhan: tampilan menu, UAC, `netsh`, layanan UrBackup asli, lokasi
+  file kepercayaan di `Program Files\UrBackup`, Windows 8.1, antivirus. Coba dulu di satu PC sebelum rollout.
+
+## Mengubah skrip
+
+Berkas `.ps1` dan `.cmd` harus tetap berakhir baris **CRLF** dan hanya berisi karakter ASCII
+(`.gitattributes` mengunci ini). Periksa sebelum push: `git ls-files --eol` harus menampilkan `i/crlf` untuk
+`k8.cmd`, `k8.ps1`, dan semua berkas di `server/`. Setelah push ke `main`, perubahan langsung dipakai PC
+(cache GitHub sekitar 5 menit). Untuk membekukan versi, ganti `main` di link dengan nama tag, mis. `v2`.

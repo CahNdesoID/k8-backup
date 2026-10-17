@@ -11,7 +11,7 @@
 #  nama folder tingkat atas C:\. Isi file tidak dibaca.
 # =====================================================================================
 
-$K8Versi = 'k8-2'
+$K8Versi = 'k8-3'
 $K8Url = 'https://raw.githubusercontent.com/CahNdesoID/k8-backup/main/k8.ps1'
 if ($env:K8_URL) { $K8Url = $env:K8_URL }
 $ServerIP = '192.168.1.88'
@@ -22,6 +22,7 @@ $PortUb = 55414
 $UbVersi = '2.5.32'
 $UbInstaller = 'https://hndl.urbackup.org/Client/' + $UbVersi + '/UrBackup%20Client%20' + $UbVersi + '.exe'
 if ($env:K8_INSTALLER) { $UbInstaller = $env:K8_INSTALLER }
+$UnduhBatasMs = 20000
 $AkarC = ''
 if ($env:K8_AKARC) { $AkarC = $env:K8_AKARC }
 $FolderData = Join-Path $env:ProgramData 'Kedaton8Backup'
@@ -34,6 +35,8 @@ $DivisiValid = @('Housekeeping', 'IT', 'Marketing', 'Purchasing', 'Finance', 'HR
 
 # Folder tingkat atas C:\ yang dianggap SISTEM (tidak perlu dibackup). Selain ini = kemungkinan data pengguna.
 $SistemC = '(?i)^(Windows|Windows\.old|Program Files|Program Files \(x86\)|ProgramData|Users|Recovery|PerfLogs|\$Recycle\.Bin|System Volume Information|Documents and Settings|MSOCache|Config\.Msi|\$WINDOWS\.~BT|\$WINDOWS\.~WS|\$WinREAgent|\$SysReset|Intel|AMD|NVIDIA|inetpub|OneDriveTemp|SWSetup|SWTOOLS|HP|Dell)$'
+# Adaptor virtual / hotspot: alamatnya tidak relevan untuk server backup.
+$AdaptorMaya = '(?i)wi-?fi direct|hosted network|vmware|virtualbox|vbox|hyper-v|vethernet|docker|tap-windows|bluetooth|tunnel|pseudo'
 # Label drive yang mencurigakan sebagai partisi pemulihan/OEM.
 $CurigaPulih = '(?i)recover|restore|winre|reserved|diag|factory|oem|hp_tools|lenovo_part'
 # File kepercayaan server milik UrBackup Client (Windows: di folder program client).
@@ -62,9 +65,15 @@ function Adalah-Admin {
     } catch { return $false }
 }
 
+# Perintah untuk jendela Administrator: tampilkan pesan dulu (supaya jendela tidak tampak kosong saat menu diunduh),
+# lalu ambil menu. Kalau gagal, jendela menunggu Enter supaya pesan galatnya sempat terbaca.
+function Perintah-Naik {
+    return ('Write-Host ''Mengambil menu Kedaton 8, tunggu sebentar ...''; [Net.ServicePointManager]::SecurityProtocol=3072; ' +
+        'try { irm ''' + $K8Url + ''' | iex } catch { Write-Host (''GAGAL: '' + $_.Exception.Message) -ForegroundColor Red; [void](Read-Host ''Tekan Enter untuk menutup'') }')
+}
+
 function Naik-Admin {
-    $perintah = "[Net.ServicePointManager]::SecurityProtocol=3072; irm '" + $K8Url + "' | iex"
-    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $perintah)
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -Command ' + (Perintah-Naik))
 }
 
 # ---------------- HMAC (password tidak pernah dikirim) ----------------
@@ -146,19 +155,26 @@ function Format-Disk($huruf, $label, $total, $bebas) {
 }
 
 function Pindai {
-    $ips = @()
+    $semua = @()
+    $utama = @()
     try {
         foreach ($n in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
             if ($n.OperationalStatus -ne [Net.NetworkInformation.OperationalStatus]::Up) { continue }
             if ($n.NetworkInterfaceType -eq [Net.NetworkInformation.NetworkInterfaceType]::Loopback) { continue }
+            $maya = (($n.Description + ' ' + $n.Name) -match $AdaptorMaya)
             foreach ($a in $n.GetIPProperties().UnicastAddresses) {
                 if ($a.Address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { continue }
                 $s = $a.Address.ToString()
                 if ($s.StartsWith('169.254.') -or $s.StartsWith('127.')) { continue }
-                $ips += $s
+                $semua += $s
+                if ($maya -or $s.StartsWith('192.168.137.')) { continue }
+                $utama += $s
             }
         }
     } catch { }
+    # Alamat hotspot Windows / adaptor virtual tidak dilaporkan; kalau hanya itu yang ada, pakai semuanya.
+    $ips = @($utama)
+    if ($ips.Count -eq 0) { $ips = @($semua) }
     $disk = @()
     try {
         foreach ($d in [IO.DriveInfo]::GetDrives()) {
@@ -342,6 +358,123 @@ function Daftar-Ke-Server($divisi, $nama) {
     return $terkirim
 }
 
+# ---------------- unduh installer: progres, batas waktu, lanjutkan, coba ulang ----------------
+function Ukuran-MB($b) { return ([math]::Round($b / 1MB, 1)).ToString([Globalization.CultureInfo]::InvariantCulture) }
+
+# Satu percobaan. Melanjutkan dari file .part kalau server mendukung Range. Melempar galat kalau gagal / terputus / macet.
+function Unduh-Sekali($url, $part, $langsung) {
+    $mulai = [long]0
+    if (Test-Path -LiteralPath $part) { $mulai = [long](Get-Item -LiteralPath $part).Length }
+    $req = [Net.HttpWebRequest][Net.WebRequest]::Create($url)
+    $req.Timeout = $UnduhBatasMs
+    $req.ReadWriteTimeout = $UnduhBatasMs
+    $req.UserAgent = 'K8Backup/' + $K8Versi
+    if ($langsung) { $req.Proxy = $null }
+    if ($mulai -gt 0) { $req.AddRange($mulai) }
+    $res = $null
+    try { $res = $req.GetResponse() }
+    catch [Net.WebException] {
+        $er = $_.Exception.Response
+        if ($er -and [int]$er.StatusCode -eq 416) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
+        throw
+    }
+    $st = $null
+    $fs = $null
+    try {
+        $total = [long]$res.ContentLength
+        $mode = [IO.FileMode]::Create
+        if ([int]$res.StatusCode -eq 206 -and $mulai -gt 0) {
+            $mode = [IO.FileMode]::Append
+            if ($total -ge 0) { $total = $total + $mulai }
+        } else {
+            $mulai = [long]0
+        }
+        if ($mulai -gt 0) { Info ('  Melanjutkan dari ' + (Ukuran-MB $mulai) + ' MB') }
+        $st = $res.GetResponseStream()
+        $fs = New-Object IO.FileStream($part, $mode, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $buf = New-Object byte[] 65536
+        $sudah = $mulai
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $tCetak = [long]0
+        $bCetak = $sudah
+        while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
+            $fs.Write($buf, 0, $n)
+            $sudah += $n
+            $dt = $sw.ElapsedMilliseconds - $tCetak
+            if ($dt -ge 3000) {
+                $kec = [math]::Round((($sudah - $bCetak) / 1MB) / ($dt / 1000), 2)
+                $teks = '  ' + (Ukuran-MB $sudah) + ' MB'
+                if ($total -gt 0) { $teks += ' dari ' + (Ukuran-MB $total) + ' MB (' + [math]::Floor($sudah * 100 / $total) + '%)' }
+                Info ($teks + '   ' + $kec.ToString([Globalization.CultureInfo]::InvariantCulture) + ' MB/detik')
+                $tCetak = $sw.ElapsedMilliseconds
+                $bCetak = $sudah
+            }
+        }
+        $fs.Close()
+        $fs = $null
+        if ($total -ge 0 -and $sudah -ne $total) {
+            throw ('Unduhan terputus di ' + (Ukuran-MB $sudah) + ' dari ' + (Ukuran-MB $total) + ' MB')
+        }
+    }
+    finally {
+        if ($fs) { $fs.Close() }
+        if ($st) { $st.Close() }
+        $res.Close()
+    }
+}
+
+# Tiga percobaan (langsung, lewat proxy sistem, langsung). Alamat file:// disalin saja (untuk uji / installer lokal).
+function Unduh-Berkas($url, $tujuan) {
+    $uri = $null
+    try { $uri = New-Object Uri($url) } catch { }
+    if ($uri -and $uri.IsFile) {
+        if (-not (Test-Path -LiteralPath $uri.LocalPath -PathType Leaf)) { throw ('File installer tidak ada: ' + $uri.LocalPath) }
+        Info ('  Memakai file lokal: ' + $uri.LocalPath)
+        Copy-Item -LiteralPath $uri.LocalPath -Destination $tujuan -Force
+        return
+    }
+    $part = $tujuan + '.part'
+    $galat = ''
+    Info ('  Mengunduh: ' + $url)
+    for ($coba = 1; $coba -le 3; $coba++) {
+        $langsung = ($coba -ne 2)
+        $cara = 'langsung'
+        if (-not $langsung) { $cara = 'lewat proxy sistem' }
+        Info ('  Percobaan ' + $coba + ' dari 3 (' + $cara + ') ...')
+        try {
+            Unduh-Sekali $url $part $langsung
+            Move-Item -LiteralPath $part -Destination $tujuan -Force
+            return
+        } catch {
+            $galat = $_.Exception.Message
+            Info ('  Gagal: ' + $galat) 'Yellow'
+            if ($coba -lt 3) { Start-Sleep -Seconds 3 }
+        }
+    }
+    throw ('Unduhan gagal 3 kali (' + $galat + ')')
+}
+
+# Dapatkan installer di $out: unduh, atau (kalau gagal) pakai file yang diunduh sendiri lewat browser.
+function Ambil-Installer($out) {
+    try { Unduh-Berkas $UbInstaller $out; return }
+    catch { Info ('  ' + $_.Exception.Message) 'Yellow' }
+    Info '  Cara lain: unduh installernya lewat browser dari alamat di atas, lalu ketik lokasi filenya di sini.' 'Yellow'
+    $lok = (Tanya '  Lokasi file installer (kosongkan untuk batal)') -replace '^"+|"+$', ''
+    if (-not $lok) { throw 'Dibatalkan: installer belum ada.' }
+    if (-not (Test-Path -LiteralPath $lok -PathType Leaf)) { throw ('File tidak ditemukan: ' + $lok) }
+    Copy-Item -LiteralPath $lok -Destination $out -Force
+}
+
+function Cek-Exe($berkas) {
+    $kb = [math]::Round((Get-Item -LiteralPath $berkas).Length / 1KB)
+    if ($kb -lt 1024) { throw ('File terlalu kecil (' + $kb + ' KB), kemungkinan bukan installer. Cek koneksi internet / URL.') }
+    $mz = New-Object byte[] 2
+    $f = [IO.File]::OpenRead($berkas)
+    try { [void]$f.Read($mz, 0, 2) } finally { $f.Close() }
+    if ($mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) { throw 'File bukan program Windows (.exe). Kemungkinan halaman galat yang terunduh.' }
+    return $kb
+}
+
 # ---------------- aksi 1: pasang / daftar ----------------
 function Aksi-Pasang($divisi, $nama, [switch]$TanpaInstall) {
     $svc = @(Ub-Layanan)
@@ -350,12 +483,9 @@ function Aksi-Pasang($divisi, $nama, [switch]$TanpaInstall) {
     } else {
         $out = Join-Path $env:TEMP ('UrBackupClient-' + $UbVersi + '.exe')
         if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
-        Info ('  Mengunduh: ' + $UbInstaller)
-        $wc = New-Object Net.WebClient
-        try { $wc.DownloadFile($UbInstaller, $out) } finally { $wc.Dispose() }
-        $kb = [math]::Round((Get-Item -LiteralPath $out).Length / 1KB)
-        if ($kb -lt 1024) { throw ('File terunduh terlalu kecil (' + $kb + ' KB), kemungkinan bukan installer. Cek koneksi internet / URL.') }
-        Info ('  Terunduh: ' + $kb + ' KB')
+        Ambil-Installer $out
+        $kb = Cek-Exe $out
+        Info ('  Installer siap: ' + $kb + ' KB')
 
         $sig = $null
         try { $sig = Get-AuthenticodeSignature -FilePath $out } catch { }

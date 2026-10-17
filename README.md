@@ -29,6 +29,18 @@ Menu yang muncul:
 
 Password pemasangan ditanya saat menu 1 atau 2 dipakai (tersembunyi, tidak disimpan). Minta ke IT.
 
+Setelah UAC dijawab Yes, jendela baru menampilkan "Mengambil menu Kedaton 8 ..." beberapa detik lalu menunya muncul.
+Kalau gagal mengambil, pesan galat ditahan di layar sampai Enter ditekan.
+
+**Unduhan installer (menu 1)** menampilkan progres (MB, persen, kecepatan), berhenti kalau 20 detik tanpa data,
+mencoba tiga kali (langsung, lewat proxy sistem, langsung) dan melanjutkan dari bagian yang sudah terunduh.
+Kalau tetap gagal, menu meminta lokasi file installer yang diunduh sendiri lewat browser. Untuk memakai file lokal
+sejak awal, jalankan ini di PowerShell sebelum satu baris di atas:
+
+```
+$env:K8_INSTALLER = ([Uri]"C:\Users\Nama\Downloads\UrBackup Client 2.5.32.exe").AbsoluteUri
+```
+
 Kalau GitHub tidak terjangkau dari PC itu, ambil dari server (penerima harus sedang aktif):
 
 ```
@@ -40,6 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm http://192.168.1.88:
 1. Salin folder ini ke server (RDP, copy-paste folder), mis. `E:\Repo\Divisi\_setup\k8-backup\`.
    `k8.ps1` harus tetap berada satu tingkat di atas folder `server` (untuk jalur cadangan LAN).
 2. Klik dua kali `server\jalankan-server.cmd` (atau `powershell -ExecutionPolicy Bypass -File server\k8-server.ps1 -BukaFirewall`).
+   Bawaan menerima dari `192.168.1.*` dan `192.168.6.*`; ubah dengan `-Izinkan` dan `-AlamatFirewall`.
 3. Ketik password pemasangan dua kali. Pakai yang panjang (10 karakter atau lebih), huruf/angka/simbol ASCII tanpa spasi.
 4. Biarkan jendelanya terbuka. Berhenti sendiri setelah 240 menit (`-MenitMaks`, `0` = tanpa batas) atau Ctrl+C.
    Aturan firewall yang dibuat ikut dihapus saat berhenti.
@@ -73,10 +86,11 @@ Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tida
 - Password tidak pernah dikirim lewat jaringan. PC mengambil kode sekali pakai dari server (`/nonce`, 60 detik) lalu
   mengirim HMAC-SHA256 dari `jalur + isi permintaan`. Sadapan tidak bisa dipakai ulang, isi tidak bisa diubah.
 - 5 kali salah dari satu alamat dalam 10 menit = alamat itu dikunci 10 menit.
-- Server hanya menerima dari `192.168.6.*` (`-Izinkan`), badan maks 8 KB, semua isian divalidasi
+- Server hanya menerima dari `192.168.1.*` dan `192.168.6.*` (`-Izinkan`), badan maks 8 KB, semua isian divalidasi
   (divisi dari daftar baku, nama huruf/angka, IP IPv4 yang sah). Nama file CSV dibentuk dari nilai yang sudah lolos.
 - Data yang dikirim: nama PC, divisi, nama orang, IP, label dan ukuran drive, nama folder tingkat atas `C:\`.
-  Isi file tidak dibaca.
+  Isi file tidak dibaca. IP hotspot Windows (`192.168.137.*`) dan adaptor virtual (VMware, VirtualBox, Hyper-V,
+  Bluetooth, dll.) tidak ikut dilaporkan.
 - Firewall PC dibuka hanya untuk `192.168.1.88` (TCP 35621, 35623; UDP 35622).
 - **Siapa pun yang bisa push ke repo ini bisa menjalankan kode di PC kantor.** Aktifkan 2FA di akun GitHub pemilik repo,
   dan jangan beri akses tulis ke orang lain.
@@ -89,7 +103,8 @@ Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tida
 - Server: Windows Server 2016 (PowerShell 5.1), memakai `HttpListener`.
 - Diuji pada PowerShell 7 (Linux) dengan server UrBackup tiruan: validasi input, password benar/salah/replay/kunci,
   sinkron IP ke API UrBackup (tambah/hapus alamat, sesi habis, UrBackup mati), reset koneksi, menu terprogram,
-  jalur `irm | iex`. **Belum diuji** di Windows sungguhan: tampilan menu, UAC, `netsh`, layanan UrBackup asli, lokasi
+  jalur `irm | iex`, unduhan (putus di tengah, macet, server tanpa Range, 404, halaman HTML, file lokal).
+  **Belum diuji** di Windows sungguhan: tampilan menu, UAC, `netsh`, layanan UrBackup asli, lokasi
   file kepercayaan di `Program Files\UrBackup`, Windows 8.1, antivirus. Coba dulu di satu PC sebelum rollout.
 
 ## Mengubah skrip
@@ -97,4 +112,4 @@ Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tida
 Berkas `.ps1` dan `.cmd` harus tetap berakhir baris **CRLF** dan hanya berisi karakter ASCII
 (`.gitattributes` mengunci ini). Periksa sebelum push: `git ls-files --eol` harus menampilkan `i/crlf` untuk
 `k8.cmd`, `k8.ps1`, dan semua berkas di `server/`. Setelah push ke `main`, perubahan langsung dipakai PC
-(cache GitHub sekitar 5 menit). Untuk membekukan versi, ganti `main` di link dengan nama tag, mis. `v2`.
+(cache GitHub sekitar 5 menit). Untuk membekukan versi, ganti `main` di link dengan nama tag, mis. `v3`.

@@ -11,7 +11,7 @@
                    di UrBackup lewat alamat IP, alamat lamanya diganti dengan yang baru. PC yang belum ada di UrBackup
                    TIDAK pernah ditambahkan otomatis.
     GET  /nonce    kode acak sekali pakai (60 detik) untuk membuktikan password
-    GET  /ping     'ok k8-2' (tanpa password, untuk cek jangkauan)
+    GET  /ping     'ok k8-3' (tanpa password, untuk cek jangkauan)
     GET  /k8.ps1   cadangan LAN untuk menu di PC (kalau GitHub tidak terjangkau). Isinya sama dengan k8.ps1 di repo
                    (tanpa rahasia), dengan alamat unduhan ulang diarahkan ke server ini.
 
@@ -23,7 +23,7 @@
     - Pakai password yang panjang (>= 10 karakter). HMAC yang tersadap secara teori bisa ditebak offline kalau password pendek.
 
   Pembatasan lain:
-    - Hanya dari alamat yang diawali -Izinkan (default 192.168.6.). Yang lain mendapat 403.
+    - Hanya dari alamat yang diawali -Izinkan (default 192.168.1. dan 192.168.6.). Yang lain mendapat 403.
     - Divisi harus dari daftar baku; Nama hanya huruf/angka; nama PC hanya huruf/angka/strip. Nama berkas dibentuk dari
       nilai yang sudah lolos periksa, jadi tidak bisa keluar dari folder tujuan.
     - Isi disk / folder C:\ dibersihkan dan dibatasi panjangnya. Badan permintaan maksimal 8 KB.
@@ -38,8 +38,8 @@ param(
     [string]$Tujuan         = 'E:\Repo\Divisi\_setup\registrasi',
     [int]$Port              = 8088,
     [string]$Prefix         = '',
-    [string[]]$Izinkan      = @('192.168.6.'),
-    [string]$AlamatFirewall = '192.168.6.0/24',
+    [string[]]$Izinkan      = @('192.168.1.', '192.168.6.'),
+    [string]$AlamatFirewall = '192.168.1.0/24,192.168.6.0/24',
     [int]$MenitMaks         = 240,
     [string]$UbUrl          = 'http://127.0.0.1:55414',
     [string]$UbUser         = '',
@@ -48,7 +48,7 @@ param(
     [switch]$BukaFirewall
 )
 $ErrorActionPreference = 'Stop'
-$Versi = 'k8-2'
+$Versi = 'k8-3'
 if (-not $Prefix) { $Prefix = 'http://+:' + $Port + '/' }
 $Izinkan = @($Izinkan | ForEach-Object { ('' + $_) -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($Izinkan.Count -eq 0) { Write-Host 'GAGAL: -Izinkan kosong.' -ForegroundColor Red; exit 1 }

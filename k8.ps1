@@ -703,6 +703,46 @@ function Aksi-Status {
     Tandai (Cek-Tcp $ServerIP $PortUb 3000) ('Server UrBackup ' + $ServerIP + ':' + $PortUb + ' terjangkau')
 }
 
+# ---------------- aksi 5: ganti nama / divisi ----------------
+# Kirim identitas BARU beserta identitas LAMA; server memindahkan entri lama ke _diganti (bukan menghapus).
+# Identitas di PC ini baru diubah setelah server menerima. Kalau gagal, semuanya tetap seperti semula.
+function Aksi-Ganti($lama, $baru) {
+    $p = Pindai
+    if (-not $p.IP) { throw 'IP PC ini tidak terbaca. Cek kabel / WiFi lalu coba lagi.' }
+    $pasang = @(Bidang-PC $p $baru.Divisi $baru.Nama)
+    $pasang += , @('lama_divisi', $lama.Divisi)
+    $pasang += , @('lama_nama', $lama.Nama)
+    $r = Kirim-Bertanda '/daftar' $pasang
+    Write-Host ''
+    if ($r.Kode -ne 200) {
+        Info ('  Server menolak (HTTP ' + $r.Kode + '): ' + ('' + $r.Teks).Trim()) 'Yellow'
+        Info '  Identitas PC ini TIDAK diubah.' 'Yellow'
+        return $false
+    }
+    Simpan-Identitas $baru.Divisi $baru.Nama
+    $adaLama = $false
+    foreach ($baris in @(('' + $r.Teks) -split "`n")) {
+        $b = $baris.TrimEnd("`r")
+        if (-not $b) { continue }
+        if ($b -match '^LAMA:') {
+            $adaLama = $true
+            $warna = 'Green'
+            if ($b -notmatch 'diarsipkan') { $warna = 'Yellow' }
+            Info ('  ' + $b.Substring(5).Trim()) $warna
+        } else {
+            Info ('  Server: ' + $b) 'Green'
+        }
+    }
+    if (-not $adaLama) {
+        Info ('  PERHATIAN: penerima di server versi lama, entri lama ' + (Label-Divisi $lama.Divisi) + '_' + $lama.Nama + '.csv belum dibuang.') 'Yellow'
+        Info '  Minta IT memindahkan file itu dari folder registrasi di server.' 'Yellow'
+    }
+    Info ('  Identitas PC ini sekarang: ' + (Label-Divisi $baru.Divisi) + ' \ ' + $baru.Nama) 'Cyan'
+    Info '  Data backup tidak berubah; yang berganti hanya nama folder di share divisi.'
+    Info '  Minta IT menjalankan siapkan-divisi.ps1 di server supaya folder barunya tersambung ke backup.'
+    return $true
+}
+
 # ---------------- menu ----------------
 function Pilih-Divisi {
     Info '  Pilih divisi:'
@@ -728,7 +768,9 @@ function Menu-Pasang {
     $id = Baca-Identitas
     if ($id) {
         Info ('  PC ini sudah tercatat sebagai: ' + (Label-Divisi $id.Divisi) + ' \ ' + $id.Nama)
-        if (-not (Ya-Tidak 'Pakai identitas ini?')) { $id = $null }
+        $j = Tanya '  Pakai identitas ini? [Y = ya, G = ganti nama/divisi, T = batal]'
+        if ($j -match '(?i)^g') { Menu-Ganti; return }
+        if ($j -notmatch '(?i)^y') { Info '  Dibatalkan.' 'Yellow'; return }
     }
     if (-not $id) { $id = Minta-Identitas }
     Write-Host ''
@@ -747,6 +789,26 @@ function Menu-Sinkron {
         Info ('  Identitas: ' + (Label-Divisi $id.Divisi) + ' \ ' + $id.Nama)
     }
     if (Aksi-Sinkron $id.Divisi $id.Nama) { Simpan-Identitas $id.Divisi $id.Nama }
+}
+
+function Menu-Ganti {
+    $lama = Baca-Identitas
+    if (-not $lama) {
+        Info '  PC ini belum punya identitas tersimpan. Pakai menu 1 (Pasang / daftar) dulu.' 'Yellow'
+        return
+    }
+    Info ('  Sekarang tercatat sebagai: ' + (Label-Divisi $lama.Divisi) + ' \ ' + $lama.Nama)
+    Info '  Isi identitas yang BENAR:'
+    $baru = Minta-Identitas
+    if (($baru.Divisi -ieq $lama.Divisi) -and ($baru.Nama -ieq $lama.Nama)) {
+        Info '  Sama dengan yang tercatat, tidak ada yang diubah.' 'Yellow'
+        return
+    }
+    Write-Host ''
+    Info ('  Diubah dari :  ' + (Label-Divisi $lama.Divisi) + ' \ ' + $lama.Nama)
+    Info ('  Menjadi     :  ' + (Label-Divisi $baru.Divisi) + ' \ ' + $baru.Nama) 'Cyan'
+    if (-not (Ya-Tidak 'Lanjut?')) { Info '  Dibatalkan.' 'Yellow'; return }
+    [void](Aksi-Ganti $lama $baru)
 }
 
 function Menu-Reset { [void](Aksi-Reset) }
@@ -775,6 +837,7 @@ function Tampil-Header {
     Info '   [2]  Sinkron IP            (kalau IP PC ini berubah)'
     Info '   [3]  Muat ulang koneksi    (reset ke server backup, seperti baru terpasang)'
     Info '   [4]  Cek status'
+    Info '   [5]  Ganti nama / divisi   (salah ketik, atau PC ini ganti orang)'
     Info '   [0]  Keluar'
     Write-Host ''
 }
@@ -782,12 +845,13 @@ function Tampil-Header {
 function Menu-Utama {
     while ($true) {
         Tampil-Header
-        $pilih = Tanya '  Pilih [0-4]'
+        $pilih = Tanya '  Pilih [0-5]'
         switch ($pilih) {
             '1' { Jalankan { Menu-Pasang } }
             '2' { Jalankan { Menu-Sinkron } }
             '3' { Jalankan { Menu-Reset } }
             '4' { Jalankan { Write-Host ''; Aksi-Status } }
+            '5' { Jalankan { Menu-Ganti } }
             '0' { return }
             default { Info '  Pilihan tidak dikenal.' 'Yellow'; Start-Sleep -Seconds 1 }
         }

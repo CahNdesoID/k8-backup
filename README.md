@@ -26,8 +26,9 @@ Menu yang muncul:
 | 2 Sinkron IP | PC berganti IP: kirim IP terbaru, server memperbarui catatan dan alamat di UrBackup |
 | 3 Muat ulang koneksi | PC pernah tersambung ke server lain/percobaan: lupakan server lama, siap dipercaya server kantor |
 | 4 Cek status | Layanan, firewall, jangkauan server, identitas yang tersimpan |
+| 5 Ganti nama / divisi | Salah ketik nama, atau PC ini dipakai orang lain: kirim identitas baru, server mengarsipkan entri lama |
 
-Password pemasangan ditanya saat menu 1 atau 2 dipakai (tersembunyi, tidak disimpan). Minta ke IT.
+Password pemasangan ditanya saat menu 1, 2, atau 5 dipakai (tersembunyi, tidak disimpan). Minta ke IT.
 
 Setelah UAC dijawab Yes, jendela baru menampilkan "Mengambil menu Kedaton 8 ..." beberapa detik lalu menunya muncul.
 Kalau gagal mengambil, pesan galat ditahan di layar sampai Enter ditekan.
@@ -52,7 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm http://192.168.1.88:
 
 ## Di server (192.168.1.88)
 
-1. Salin folder ini ke server (RDP, copy-paste folder), mis. `E:\Repo\Divisi\_setup\k8-backup\`.
+1. Salin folder ini ke server (RDP, copy-paste folder), mis. `E:\Divisi\_setup\k8-backup\`.
    `k8.ps1` harus tetap berada satu tingkat di atas folder `server` (untuk jalur cadangan LAN).
 2. Klik dua kali `server\jalankan-server.cmd` (atau `powershell -ExecutionPolicy Bypass -File server\k8-server.ps1 -BukaFirewall`).
    Bawaan menerima dari `192.168.1.*` dan `192.168.6.*`; ubah dengan `-Izinkan` dan `-AlamatFirewall`.
@@ -70,10 +71,21 @@ New-Item -ItemType Directory -Force C:\k8-backup\installer | Out-Null
 Start-BitsTransfer -Source "https://hndl.urbackup.org/Client/2.5.32/UrBackup%20Client%202.5.32.exe" -Destination C:\k8-backup\installer\UrBackupClient.exe
 ```
 
+Kalau unduhan di atas sangat lambat (host urbackup.org kadang membatasi kecepatan **per koneksi**), pakai
+`server\ambil-installer.ps1`: file diambil dengan beberapa koneksi sekaligus (bawaan 8), bisa dilanjutkan kalau
+putus (jalankan lagi perintah yang sama), lalu SHA256-nya dibandingkan dengan hash resmi. Hanya kalau cocok, file
+disimpan sebagai `installer\UrBackupClient.exe`; kalau beda, disimpan sebagai `.tidak-cocok` dan tidak dipakai.
+
+```
+powershell -ExecutionPolicy Bypass -File C:\k8-backup\server\ambil-installer.ps1
+powershell -ExecutionPolicy Bypass -File C:\k8-backup\server\ambil-installer.ps1 -Bagian 4      # kalau host menolak banyak koneksi
+powershell -ExecutionPolicy Bypass -File C:\k8-backup\server\ambil-installer.ps1 -PakaiProxy    # kalau internet server lewat proxy
+```
+
 Hingga 6 PC bisa mengambil installer bersamaan tanpa menahan pendaftaran PC lain; yang ke-7 mendapat "sibuk" lalu
 otomatis memakai internet. Folder `installer` tidak masuk repo (`.gitignore`).
 
-Hasilnya: `E:\Repo\Divisi\_setup\registrasi\<Divisi>_<Nama>.csv` (ubah dengan `-Tujuan`), dibaca oleh
+Hasilnya: `E:\Divisi\_setup\registrasi\<Divisi>_<Nama>.csv` (ubah dengan `-Tujuan`), dibaca oleh
 `siapkan-divisi.ps1` dan `cek-koneksi.ps1`.
 
 Penerima ini **hanya perlu menyala** saat memasang PC dan saat ada PC yang berganti IP. Password tidak disimpan
@@ -94,6 +106,13 @@ dipertahankan. Kalau PC ditambahkan lewat nama, tidak ada yang perlu diubah.
 Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tidak berubah lagi.
 
 **Ganti PC untuk orang yang sama.** Menu 1 di PC baru dengan Divisi/Nama yang sama. Server menandai `DIGANTI`.
+
+**Salah ketik nama / PC ganti orang.** Menu 5 (atau `G` di menu 1). Isi identitas yang benar; PC mengirim identitas baru
+dan identitas lama. Server menulis CSV baru lalu **memindahkan** CSV lama ke `<Tujuan>\_diganti\` (tidak dihapus), hanya
+kalau CSV lama itu memang milik PC yang sama. Nama baru yang sudah dipakai PC lain **ditolak** (tidak ditimpa).
+Data backup tidak berpindah (folder di UrBackup memakai nama PC). Setelah itu jalankan `siapkan-divisi.ps1` di server supaya
+folder nama baru tersambung. Kalau tautan nama lama sempat dibuat, lepas dengan `rmdir` (jangan `Remove-Item -Recurse`).
+Penerima versi lama mengabaikan identitas lama: entri lama harus dipindahkan manual (PC menampilkan peringatan).
 
 ## Keamanan
 

@@ -7,6 +7,8 @@
   Yang dilakukan:
     POST /daftar   catat PC (nama PC, divisi, nama orang, IP, drive, folder C:\) ke  <Tujuan>\<Divisi>_<Nama>.csv
                    (format sama dengan launcher lama, jadi siapkan-divisi.ps1 dan cek-koneksi.ps1 langsung membacanya)
+                   Kalau badan permintaan memuat lama_divisi + lama_nama (menu 5, ganti nama), entri lama milik PC yang
+                   sama dipindah ke <Tujuan>\_diganti\ (tidak dihapus). Nama baru milik PC lain ditolak (409), bukan ditimpa.
     POST /sinkron  PC yang sudah terdaftar melaporkan IP terbarunya. CSV diperbarui. Kalau PC itu SUDAH ditambahkan
                    di UrBackup lewat alamat IP, alamat lamanya diganti dengan yang baru. PC yang belum ada di UrBackup
                    TIDAK pernah ditambahkan otomatis.
@@ -40,7 +42,7 @@
     (berhenti dengan Ctrl+C; aturan firewall yang dibuat skrip ikut dihapus)
 #>
 param(
-    [string]$Tujuan         = 'E:\Repo\Divisi\_setup\registrasi',
+    [string]$Tujuan         = 'E:\Divisi\_setup\registrasi',
     [int]$Port              = 8088,
     [string]$Prefix         = '',
     [string[]]$Izinkan      = @('192.168.1.', '192.168.6.'),
@@ -161,6 +163,43 @@ function Periksa($f) {
     if ($berkas -notmatch '^[A-Za-z0-9_-]+\.csv$') { return @{ Ok = $false; Pesan = 'nama berkas tidak valid' } }
     $isi = 'Komputer,Divisi,Nama,IP,Disk,FolderC' + "`r`n" + $pc + ',' + $divisi + ',' + $nama + ',' + ($ips -join '|') + ',' + $disk + ',' + $folderc + "`r`n"
     return @{ Ok = $true; Pesan = 'ok'; Berkas = $berkas; Isi = $isi; Label = $label; Nama = $nama; PC = $pc; IPs = $ips }
+}
+
+# Nama berkas CSV untuk pasangan Divisi/Nama (aturan sama dengan Periksa). '' kalau tidak valid.
+function Berkas-Identitas($divisiMentah, $namaMentah) {
+    $d = ('' + $divisiMentah).Trim()
+    $divisi = $null
+    if ($d -ieq 'Mandiri' -or $d -eq '-') { $divisi = '-' } else {
+        foreach ($v in $DivisiValid) { if ($v -ieq $d) { $divisi = $v } }
+    }
+    if (-not $divisi) { return '' }
+    $nama = ('' + $namaMentah).Trim()
+    if ($nama -notmatch '^[A-Za-z0-9]{1,40}$') { return '' }
+    $label = $divisi
+    if ($label -eq '-') { $label = 'Mandiri' }
+    $berkas = (($label + '_' + $nama) -replace '[^A-Za-z0-9_-]', '-') + '.csv'
+    if ($berkas -notmatch '^[A-Za-z0-9_-]+\.csv$') { return '' }
+    return $berkas
+}
+
+# Pindahkan entri lama ke <Tujuan>\_diganti\ HANYA kalau milik PC ini. Tidak pernah menghapus. Mengembalikan satu baris 'LAMA: ...'.
+function Arsipkan-Lama($tujuanPenuh, $berkasLama, $pc) {
+    $asal = Join-Path $tujuanPenuh $berkasLama
+    $nm = [IO.Path]::GetFileNameWithoutExtension($berkasLama)
+    if (-not (Test-Path -LiteralPath $asal -PathType Leaf)) { return ('LAMA: ' + $nm + ' tidak ada di server, tidak ada yang diarsipkan.') }
+    $komp = ''
+    try { $r = Import-Csv -LiteralPath $asal | Select-Object -First 1; $komp = ('' + $r.Komputer).Trim() } catch { }
+    if (-not $komp) { return ('LAMA: ' + $nm + ' tidak bisa dibaca pemiliknya, TIDAK diubah. Periksa manual.') }
+    if ($komp -ine $pc) { return ('LAMA: ' + $nm + ' milik PC ' + $komp + ', bukan PC ini. TIDAK diubah.') }
+    try {
+        $arsip = Join-Path $tujuanPenuh '_diganti'
+        if (-not (Test-Path -LiteralPath $arsip)) { New-Item -ItemType Directory -Path $arsip -Force | Out-Null }
+        $tujuan = Join-Path $arsip ($nm + '_' + (Get-Date).ToString('yyyyMMdd-HHmmss') + '.csv')
+        Move-Item -LiteralPath $asal -Destination $tujuan -ErrorAction Stop
+        return ('LAMA: ' + $nm + ' diarsipkan ke _diganti.')
+    } catch {
+        return ('LAMA: ' + $nm + ' GAGAL diarsipkan (' + $_.Exception.Message + '). Pindahkan file itu manual.')
+    }
 }
 
 function Alamat-Boleh($alamat) {
@@ -550,13 +589,40 @@ function Tangani-Permintaan($ctx, $tujuanPenuh) {
     }
 
     if ($jalur -eq '/daftar') {
+        # Ganti nama (menu 5): klien menyertakan identitas lama. Tidak boleh menimpa nama milik PC lain.
+        $berkasLama = ''
+        $barisLama = ''
+        if ($f.ContainsKey('lama_divisi') -or $f.ContainsKey('lama_nama')) {
+            $kdl = ''
+            $knl = ''
+            if ($f.ContainsKey('lama_divisi')) { $kdl = $f['lama_divisi'] }
+            if ($f.ContainsKey('lama_nama')) { $knl = $f['lama_nama'] }
+            $berkasLama = Berkas-Identitas $kdl $knl
+            if (-not $berkasLama) {
+                Balas $ctx 400 'ditolak: identitas lama tidak valid'
+                Info ($jam + '  ' + $dari + '  GANTI NAMA ditolak (identitas lama tidak valid)') 'Yellow'
+                return
+            }
+            if ($ada -and $lamaKomp -and ($lamaKomp -ine $hasil.PC)) {
+                Balas $ctx 409 ('nama ' + $hasil.Label + ' \ ' + $hasil.Nama + ' sudah dipakai PC ' + $lamaKomp + ', bukan PC ini (' + $hasil.PC + '). Ganti nama tidak boleh menimpa orang lain. Kalau memang ganti PC, pakai menu 1 (Pasang / daftar).')
+                Info ($jam + '  ' + $dari + '  GANTI NAMA ditolak: ' + $hasil.Label + ' \ ' + $hasil.Nama + ' milik PC ' + $lamaKomp + ', bukan ' + $hasil.PC) 'Yellow'
+                return
+            }
+        }
         [IO.File]::WriteAllText($tujuanBerkas, $hasil.Isi, (New-Object System.Text.UTF8Encoding($false)))
         $kata = 'DIPERBARUI'
         $warna = 'Green'
         if (-not $ada) { $kata = 'BARU' }
         elseif ($lamaKomp -and ($lamaKomp -ine $hasil.PC)) { $kata = 'DIGANTI (sebelumnya PC ' + $lamaKomp + ')'; $warna = 'Yellow' }
         Info ($jam + '  ' + $dari + '  DAFTAR ' + $kata + '  ' + $hasil.PC + '  ->  ' + $hasil.Label + ' \ ' + $hasil.Nama) $warna
-        Balas $ctx 200 ($hasil.Label + ' \ ' + $hasil.Nama + ' (' + $kata + ')')
+        if ($berkasLama) {
+            if ($berkasLama -ieq $hasil.Berkas) { $barisLama = 'LAMA: sama dengan identitas baru, tidak ada yang diarsipkan.' }
+            else { $barisLama = Arsipkan-Lama $tujuanPenuh $berkasLama $hasil.PC }
+            Info ('                        ' + $barisLama) 'DarkGray'
+        }
+        $tambah = ''
+        if ($barisLama) { $tambah = "`n" + $barisLama }
+        Balas $ctx 200 ($hasil.Label + ' \ ' + $hasil.Nama + ' (' + $kata + ')' + $tambah)
         return
     }
 

@@ -10,3 +10,8 @@ _cadangan-pengaturan/
 *token*
 *password*
 *secret*
+# Installer UrBackup (file besar, taruh di server saja)
+installer/
+*.exe
+*.part
+*.lan

@@ -32,10 +32,13 @@ Password pemasangan ditanya saat menu 1 atau 2 dipakai (tersembunyi, tidak disim
 Setelah UAC dijawab Yes, jendela baru menampilkan "Mengambil menu Kedaton 8 ..." beberapa detik lalu menunya muncul.
 Kalau gagal mengambil, pesan galat ditahan di layar sampai Enter ditekan.
 
-**Unduhan installer (menu 1)** menampilkan progres (MB, persen, kecepatan), berhenti kalau 20 detik tanpa data,
-mencoba tiga kali (langsung, lewat proxy sistem, langsung) dan melanjutkan dari bagian yang sudah terunduh.
-Kalau tetap gagal, menu meminta lokasi file installer yang diunduh sendiri lewat browser. Untuk memakai file lokal
-sejak awal, jalankan ini di PowerShell sebelum satu baris di atas:
+**Installer UrBackup Client (menu 1)** diambil dengan urutan: (1) dari **server kantor lewat LAN** kalau server
+menyimpan installer (cepat, tidak membebani internet), (2) dari internet (hndl.urbackup.org), (3) file yang kamu
+unduh sendiri lewat browser (menu meminta lokasinya). Unduhan menampilkan progres (MB, persen, kecepatan), berhenti
+kalau 20 detik tanpa data, mencoba tiga kali dan melanjutkan dari bagian yang sudah terunduh.
+Dari server, installer hanya dipakai kalau SHA256-nya sama dengan hash resmi UrBackup Client 2.5.32 (tercatat di
+`k8.ps1`, sama dengan manifest winget) dan ukuran serta SHA256 file yang diterima cocok; kalau tidak, PC beralih ke
+internet. Untuk memakai file lokal sejak awal (melewati server), jalankan ini di PowerShell sebelum satu baris di atas:
 
 ```
 $env:K8_INSTALLER = ([Uri]"C:\Users\Nama\Downloads\UrBackup Client 2.5.32.exe").AbsoluteUri
@@ -56,6 +59,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm http://192.168.1.88:
 3. Ketik password pemasangan dua kali. Pakai yang panjang (10 karakter atau lebih), huruf/angka/simbol ASCII tanpa spasi.
 4. Biarkan jendelanya terbuka. Berhenti sendiri setelah 240 menit (`-MenitMaks`, `0` = tanpa batas) atau Ctrl+C.
    Aturan firewall yang dibuat ikut dihapus saat berhenti.
+
+**Installer di server (sekali saja).** Taruh installer resmi di folder `installer` di samping folder `server`
+(mis. `C:\k8-backup\installer\UrBackupClient.exe`; nama lain yang diawali `UrBackup` juga dikenali). Penerima
+menampilkan ukuran, SHA256, dan apakah cocok dengan hash resmi. File boleh ditaruh atau diganti saat penerima berjalan.
+Unduh di server (BITS bisa dilanjutkan kalau putus):
+
+```
+New-Item -ItemType Directory -Force C:\k8-backup\installer | Out-Null
+Start-BitsTransfer -Source "https://hndl.urbackup.org/Client/2.5.32/UrBackup%20Client%202.5.32.exe" -Destination C:\k8-backup\installer\UrBackupClient.exe
+```
+
+Hingga 6 PC bisa mengambil installer bersamaan tanpa menahan pendaftaran PC lain; yang ke-7 mendapat "sibuk" lalu
+otomatis memakai internet. Folder `installer` tidak masuk repo (`.gitignore`).
 
 Hasilnya: `E:\Repo\Divisi\_setup\registrasi\<Divisi>_<Nama>.csv` (ubah dengan `-Tujuan`), dibaca oleh
 `siapkan-divisi.ps1` dan `cek-koneksi.ps1`.
@@ -91,6 +107,11 @@ Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tida
 - Data yang dikirim: nama PC, divisi, nama orang, IP, label dan ukuran drive, nama folder tingkat atas `C:\`.
   Isi file tidak dibaca. IP hotspot Windows (`192.168.137.*`) dan adaptor virtual (VMware, VirtualBox, Hyper-V,
   Bluetooth, dll.) tidak ikut dilaporkan.
+- `/installer` dan `/installer-info` tidak memakai password (isinya perangkat lunak publik) tetapi tunduk pada daftar
+  alamat yang diizinkan. Karena HTTP biasa, PC tidak percaya begitu saja: installer dari server dipakai hanya bila
+  SHA256-nya sama dengan hash resmi yang ada di `k8.ps1` (diambil lewat HTTPS dari GitHub). Penyerang di LAN yang
+  menyamar sebagai server tidak bisa menyuntikkan installer lain. Hash resmi harus diganti bersamaan dengan versi
+  UrBackup Client (`$UbVersi`, `$UbSha256` di `k8.ps1`).
 - Firewall PC dibuka hanya untuk `192.168.1.88` (TCP 35621, 35623; UDP 35622).
 - **Siapa pun yang bisa push ke repo ini bisa menjalankan kode di PC kantor.** Aktifkan 2FA di akun GitHub pemilik repo,
   dan jangan beri akses tulis ke orang lain.
@@ -103,7 +124,9 @@ Solusi akar: pasang **DHCP reservation** di router untuk tiap PC, supaya IP tida
 - Server: Windows Server 2016 (PowerShell 5.1), memakai `HttpListener`.
 - Diuji pada PowerShell 7 (Linux) dengan server UrBackup tiruan: validasi input, password benar/salah/replay/kunci,
   sinkron IP ke API UrBackup (tambah/hapus alamat, sesi habis, UrBackup mati), reset koneksi, menu terprogram,
-  jalur `irm | iex`, unduhan (putus di tengah, macet, server tanpa Range, 404, halaman HTML, file lokal).
+  jalur `irm | iex`, unduhan (putus di tengah, macet, server tanpa Range, 404, halaman HTML, file lokal), penyajian
+  installer oleh server (Range, 403/404, pengiriman paralel) dan pengambilan installer dari server oleh PC (hash
+  salah, isi terpotong, putus lalu lanjut, server mati).
   **Belum diuji** di Windows sungguhan: tampilan menu, UAC, `netsh`, layanan UrBackup asli, lokasi
   file kepercayaan di `Program Files\UrBackup`, Windows 8.1, antivirus. Coba dulu di satu PC sebelum rollout.
 

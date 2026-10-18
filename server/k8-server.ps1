@@ -11,7 +11,12 @@
                    di UrBackup lewat alamat IP, alamat lamanya diganti dengan yang baru. PC yang belum ada di UrBackup
                    TIDAK pernah ditambahkan otomatis.
     GET  /nonce    kode acak sekali pakai (60 detik) untuk membuktikan password
-    GET  /ping     'ok k8-3' (tanpa password, untuk cek jangkauan)
+    GET  /ping     'ok k8-4' (tanpa password, untuk cek jangkauan)
+    GET  /installer-info  'ok <ukuran> <sha256>' installer UrBackup Client yang disimpan di server (404 kalau tidak ada)
+    GET  /installer       isi installer, mendukung Range (lanjut kalau putus). PC memakainya supaya tidak mengunduh
+                          57 MB dari internet satu-satu. Dilayani di jalur terpisah, tidak menahan pendaftaran PC lain.
+                          File: -BerkasInstaller, atau (bawaan) <folder induk skrip>\installer\UrBackupClient.exe,
+                          atau file UrBackup*.exe terbaru di folder itu. PC memeriksa SHA256 terhadap hash resmi.
     GET  /k8.ps1   cadangan LAN untuk menu di PC (kalau GitHub tidak terjangkau). Isinya sama dengan k8.ps1 di repo
                    (tanpa rahasia), dengan alamat unduhan ulang diarahkan ke server ini.
 
@@ -44,11 +49,12 @@ param(
     [string]$UbUrl          = 'http://127.0.0.1:55414',
     [string]$UbUser         = '',
     [string]$BerkasK8       = '',
+    [string]$BerkasInstaller = '',
     [switch]$TanpaUrBackup,
     [switch]$BukaFirewall
 )
 $ErrorActionPreference = 'Stop'
-$Versi = 'k8-3'
+$Versi = 'k8-4'
 if (-not $Prefix) { $Prefix = 'http://+:' + $Port + '/' }
 $Izinkan = @($Izinkan | ForEach-Object { ('' + $_) -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($Izinkan.Count -eq 0) { Write-Host 'GAGAL: -Izinkan kosong.' -ForegroundColor Red; exit 1 }
@@ -160,6 +166,140 @@ function Periksa($f) {
 function Alamat-Boleh($alamat) {
     foreach ($p in $Izinkan) { if ($alamat.StartsWith($p)) { return $true } }
     return $false
+}
+
+# ---------------- installer UrBackup Client untuk PC (LAN) ----------------
+function Sha256-Berkas($berkas) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $f = [IO.File]::OpenRead($berkas)
+    try { return (Hex ($sha.ComputeHash($f))) }
+    finally { $f.Close(); $sha.Dispose() }
+}
+
+# Tentukan file installer: -BerkasInstaller, atau <induk skrip>\installer\UrBackupClient.exe, atau UrBackup*.exe terbaru di sana.
+function Cari-Installer {
+    if ($BerkasInstaller) { return $BerkasInstaller }
+    if (-not $PSScriptRoot) { return '' }
+    $dir = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer'
+    $baku = Join-Path $dir 'UrBackupClient.exe'
+    if (Test-Path -LiteralPath $baku -PathType Leaf) { return $baku }
+    if (Test-Path -LiteralPath $dir -PathType Container) {
+        $f = @(Get-ChildItem -LiteralPath $dir -Filter 'UrBackup*.exe' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+        if ($f.Count -gt 0) { return $f[0].FullName }
+    }
+    return $baku
+}
+
+# Ukuran + SHA256 file installer; dihitung ulang otomatis kalau file diganti saat server berjalan. $null kalau tidak ada.
+$script:Inst = $null
+function Info-Installer {
+    $p = Cari-Installer
+    if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    $fi = Get-Item -LiteralPath $p
+    if ($script:Inst -and $script:Inst.Path -eq $fi.FullName -and $script:Inst.Len -eq $fi.Length -and $script:Inst.Tulis -eq $fi.LastWriteTimeUtc.Ticks) { return $script:Inst }
+    $script:Inst = @{ Path = $fi.FullName; Len = [long]$fi.Length; Tulis = $fi.LastWriteTimeUtc.Ticks; Sha = (Sha256-Berkas $fi.FullName) }
+    return $script:Inst
+}
+
+# Hash resmi yang tercatat di k8.ps1 ($UbSha256), untuk dibandingkan saat server mulai.
+function Hash-Resmi {
+    try {
+        if ($BerkasK8 -and (Test-Path -LiteralPath $BerkasK8)) {
+            $t = [IO.File]::ReadAllText($BerkasK8, [Text.Encoding]::UTF8)
+            if ($t -match '\$UbSha256\s*=\s*''([0-9A-Fa-f]{64})''') { return $Matches[1].ToLower() }
+        }
+    } catch { }
+    return ''
+}
+
+# Dijalankan di runspace terpisah supaya pengiriman 57 MB tidak menahan pendaftaran / sinkron PC lain.
+$BlokKirim = @'
+param($ctx, $path, $len, $rangeHdr)
+$resp = $ctx.Response
+$mulai = [long]0
+$akhir = [long]($len - 1)
+$parsial = $false
+if ($rangeHdr -match '^bytes=(\d+)-(\d*)$') {
+    $mulai = [long]$Matches[1]
+    if ($Matches[2]) { $akhir = [math]::Min([long]$Matches[2], [long]($len - 1)) }
+    if ($mulai -ge $len -or $mulai -gt $akhir) {
+        try {
+            $resp.StatusCode = 416
+            $resp.AddHeader('Content-Range', 'bytes */' + $len)
+            $resp.ContentLength64 = 0
+            $resp.Close()
+        } catch { }
+        return 'RANGE-416'
+    }
+    $parsial = $true
+}
+$jumlah = [long]($akhir - $mulai + 1)
+$fs = $null
+$terkirim = [long]0
+$sw = [Diagnostics.Stopwatch]::StartNew()
+try {
+    $fs = New-Object IO.FileStream($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    [void]$fs.Seek($mulai, [IO.SeekOrigin]::Begin)
+    $resp.ContentType = 'application/octet-stream'
+    $resp.AddHeader('Accept-Ranges', 'bytes')
+    if ($parsial) {
+        $resp.StatusCode = 206
+        $resp.AddHeader('Content-Range', 'bytes ' + $mulai + '-' + $akhir + '/' + $len)
+    } else {
+        $resp.StatusCode = 200
+    }
+    $resp.ContentLength64 = $jumlah
+    $buf = New-Object byte[] 262144
+    $sisa = $jumlah
+    $out = $resp.OutputStream
+    while ($sisa -gt 0) {
+        $n = $fs.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sisa))
+        if ($n -le 0) { break }
+        $out.Write($buf, 0, $n)
+        $sisa -= $n
+        $terkirim += $n
+    }
+    $out.Close()
+    $resp.Close()
+    return ('OK ' + $terkirim + ' ' + [math]::Round($sw.Elapsed.TotalSeconds, 1))
+} catch {
+    try { $resp.Abort() } catch { }
+    return ('PUTUS ' + $terkirim + ' ' + $_.Exception.Message)
+} finally {
+    if ($fs) { $fs.Close() }
+}
+'@
+
+$script:Pool = $null
+$script:Aktif = New-Object System.Collections.ArrayList
+$MaksKirim = 6
+
+function Mulai-Kirim($ctx, $inst, $dari) {
+    $hdr = '' + $ctx.Request.Headers['Range']
+    $ps = [powershell]::Create()
+    $ps.RunspacePool = $script:Pool
+    [void]$ps.AddScript($BlokKirim).AddArgument($ctx).AddArgument($inst.Path).AddArgument([long]$inst.Len).AddArgument($hdr)
+    $h = $ps.BeginInvoke()
+    [void]$script:Aktif.Add(@{ PS = $ps; H = $h; Dari = $dari; Rentang = $hdr })
+}
+
+# Tuntaskan pengiriman yang sudah selesai, catat hasilnya di layar.
+function Bersih-Kirim {
+    foreach ($a in @($script:Aktif)) {
+        if (-not $a.H.IsCompleted) { continue }
+        $hasil = ''
+        try { $r = $a.PS.EndInvoke($a.H); $hasil = '' + ($r | Select-Object -Last 1) }
+        catch { $hasil = 'PUTUS ' + $_.Exception.Message }
+        try { $a.PS.Dispose() } catch { }
+        $script:Aktif.Remove($a)
+        $jam = (Get-Date).ToString('HH:mm:ss')
+        $ket = ''
+        if ($a.Rentang) { $ket = '  (lanjutan ' + $a.Rentang + ')' }
+        if ($hasil -like 'OK *') { Info ($jam + '  ' + $a.Dari + '  INSTALLER terkirim  ' + ($hasil.Substring(3) -replace '^(\d+) (.*)$', '$1 byte dalam $2 detik') + $ket) 'Green' }
+        elseif ($hasil -like 'RANGE-416*') { Info ($jam + '  ' + $a.Dari + '  INSTALLER: rentang tidak sah') 'Yellow' }
+        elseif ($hasil -match '^PUTUS (\d+)') { Info ($jam + '  ' + $a.Dari + '  INSTALLER terputus di ' + $Matches[1] + ' byte (PC menutup koneksi / jaringan putus; PC akan mencoba lagi)' + $ket) 'Yellow' }
+        else { Info ($jam + '  ' + $a.Dari + '  INSTALLER gagal  ' + $hasil + $ket) 'Yellow' }
+    }
 }
 
 # ---------------- kode sekali pakai + penguncian ----------------
@@ -354,6 +494,15 @@ function Tangani-Permintaan($ctx, $tujuanPenuh) {
         Info ($jam + '  ' + $dari + '  k8.ps1 diunduh dari server (cadangan LAN)') 'DarkGray'
         return
     }
+    if (($jalur -eq '/installer-info' -or $jalur -eq '/installer') -and $metode -eq 'GET') {
+        $i = $null
+        try { $i = Info-Installer } catch { Info ($jam + '  GALAT membaca installer: ' + $_.Exception.Message) 'Red' }
+        if (-not $i) { Balas $ctx 404 'installer tidak tersedia di server'; return }
+        if ($jalur -eq '/installer-info') { Balas $ctx 200 ('ok ' + $i.Len + ' ' + $i.Sha); return }
+        if ($script:Aktif.Count -ge $MaksKirim) { Balas $ctx 503 'server sedang melayani banyak PC, coba lagi sebentar'; return }
+        Mulai-Kirim $ctx $i $dari
+        return
+    }
     if ($jalur -ne '/daftar' -and $jalur -ne '/sinkron') { Balas $ctx 404 'tidak ada'; return }
     if ($metode -ne 'POST') { Balas $ctx 405 'gunakan POST'; return }
     if (Terkunci $dari) { Balas $ctx 429 'terlalu banyak percobaan salah, coba lagi 10 menit'; Info ($jam + '  ' + $dari + '  DIKUNCI (percobaan salah berulang)') 'Yellow'; return }
@@ -477,6 +626,36 @@ try {
         Info ('Firewall: TCP ' + $Port + ' dibuka dari ' + $AlamatFirewall + ' (dihapus otomatis saat skrip berhenti).') 'Green'
     }
 
+    # Installer untuk PC (opsional): tampilkan status, periksa terhadap hash resmi.
+    $pInst = Cari-Installer
+    $inst = $null
+    try { $inst = Info-Installer } catch { Info ('Installer tidak bisa dibaca: ' + $_.Exception.Message) 'Yellow' }
+    if ($inst) {
+        $resmi = Hash-Resmi
+        $ket = 'hash resmi tidak bisa dibandingkan (k8.ps1 tidak terbaca)'
+        $wr = 'Yellow'
+        if ($resmi) {
+            if ($inst.Sha -eq $resmi) { $ket = 'COCOK dengan hash resmi UrBackup Client (PC akan memakainya)'; $wr = 'Green' }
+            else { $ket = 'BEDA dari hash resmi di k8.ps1: PC akan MENOLAK file ini dan mengunduh dari internet. Pakai file asli dari urbackup.org.' }
+        }
+        Info ('Installer untuk PC: ' + $inst.Path + '  (' + [math]::Round($inst.Len / 1MB, 1) + ' MB)') 'Cyan'
+        Info ('   SHA256 ' + $inst.Sha) 'Cyan'
+        Info ('   ' + $ket) $wr
+        try {
+            $sg = Get-AuthenticodeSignature -FilePath $inst.Path
+            if ($sg) {
+                $pen = ''
+                if ($sg.SignerCertificate) { $pen = ' - ' + $sg.SignerCertificate.Subject }
+                Info ('   Tanda tangan: ' + $sg.Status + $pen) 'DarkGray'
+            }
+        } catch { }
+    } else {
+        Info ('Installer untuk PC: TIDAK ADA (' + $pInst + '). PC akan mengunduh 57 MB dari internet satu-satu.') 'Yellow'
+        Info '   Taruh file UrBackup Client 2.5.32.exe di folder itu (nama bebas, awali "UrBackup"), lalu tidak perlu restart.' 'Yellow'
+    }
+    $script:Pool = [runspacefactory]::CreateRunspacePool(1, $MaksKirim)
+    $script:Pool.Open()
+
     $listener = New-Object System.Net.HttpListener
     $listener.Prefixes.Add($Prefix)
     $listener.Start()
@@ -489,7 +668,10 @@ try {
 
     while ($tanpaBatas -or (Get-Date) -lt $batas) {
         $tugas = $listener.GetContextAsync()
-        while (-not $tugas.AsyncWaitHandle.WaitOne(500)) { if (-not $tanpaBatas -and (Get-Date) -ge $batas) { break } }
+        while (-not $tugas.AsyncWaitHandle.WaitOne(500)) {
+            Bersih-Kirim
+            if (-not $tanpaBatas -and (Get-Date) -ge $batas) { break }
+        }
         if (-not $tugas.IsCompleted) { break }
         $ctx = $tugas.Result
         try {
@@ -498,6 +680,7 @@ try {
             Info ((Get-Date).ToString('HH:mm:ss') + '  GALAT: ' + $_.Exception.Message) 'Red'
             try { Balas $ctx 500 'galat di server' } catch { }
         }
+        Bersih-Kirim
     }
     Info 'Waktu habis. Penerima berhenti.' 'Yellow'
 }
@@ -507,6 +690,8 @@ catch {
 }
 finally {
     if ($listener) { try { $listener.Stop(); $listener.Close() } catch { } }
+    foreach ($a in @($script:Aktif)) { try { $a.PS.Stop() } catch { } try { $a.PS.Dispose() } catch { } }
+    if ($script:Pool) { try { $script:Pool.Close(); $script:Pool.Dispose() } catch { } }
     if ($firewallDibuat) {
         & netsh advfirewall firewall delete rule name="$NamaAturan" | Out-Null
         Info 'Aturan firewall penerima dihapus.' 'Green'

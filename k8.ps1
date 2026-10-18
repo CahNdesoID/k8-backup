@@ -11,7 +11,7 @@
 #  nama folder tingkat atas C:\. Isi file tidak dibaca.
 # =====================================================================================
 
-$K8Versi = 'k8-3'
+$K8Versi = 'k8-4'
 $K8Url = 'https://raw.githubusercontent.com/CahNdesoID/k8-backup/main/k8.ps1'
 if ($env:K8_URL) { $K8Url = $env:K8_URL }
 $ServerIP = '192.168.1.88'
@@ -22,6 +22,9 @@ $PortUb = 55414
 $UbVersi = '2.5.32'
 $UbInstaller = 'https://hndl.urbackup.org/Client/' + $UbVersi + '/UrBackup%20Client%20' + $UbVersi + '.exe'
 if ($env:K8_INSTALLER) { $UbInstaller = $env:K8_INSTALLER }
+# Hash resmi installer UrBackup Client 2.5.32 (sama dengan manifest winget UrBackup.UrBackup.Client). Ganti bersama $UbVersi.
+$UbSha256 = '4F531D823DB8CCAA384D383D26BAAB050C3739AE7F9B2E34566F4CA0466BF90A'
+if ($env:K8_SHA256) { $UbSha256 = $env:K8_SHA256 }
 $UnduhBatasMs = 20000
 $AkarC = ''
 if ($env:K8_AKARC) { $AkarC = $env:K8_AKARC }
@@ -423,8 +426,8 @@ function Unduh-Sekali($url, $part, $langsung) {
     }
 }
 
-# Tiga percobaan (langsung, lewat proxy sistem, langsung). Alamat file:// disalin saja (untuk uji / installer lokal).
-function Unduh-Berkas($url, $tujuan) {
+# Tiga percobaan (langsung, lewat proxy sistem, langsung; untuk LAN selalu langsung). Alamat file:// disalin saja.
+function Unduh-Berkas($url, $tujuan, [switch]$HanyaLangsung) {
     $uri = $null
     try { $uri = New-Object Uri($url) } catch { }
     if ($uri -and $uri.IsFile) {
@@ -437,7 +440,7 @@ function Unduh-Berkas($url, $tujuan) {
     $galat = ''
     Info ('  Mengunduh: ' + $url)
     for ($coba = 1; $coba -le 3; $coba++) {
-        $langsung = ($coba -ne 2)
+        $langsung = ($coba -ne 2) -or $HanyaLangsung
         $cara = 'langsung'
         if (-not $langsung) { $cara = 'lewat proxy sistem' }
         Info ('  Percobaan ' + $coba + ' dari 3 (' + $cara + ') ...')
@@ -454,8 +457,55 @@ function Unduh-Berkas($url, $tujuan) {
     throw ('Unduhan gagal 3 kali (' + $galat + ')')
 }
 
-# Dapatkan installer di $out: unduh, atau (kalau gagal) pakai file yang diunduh sendiri lewat browser.
+function Sha256-Berkas($berkas) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $f = [IO.File]::OpenRead($berkas)
+    try { return (Hex ($sha.ComputeHash($f))) }
+    finally { $f.Close(); $sha.Dispose() }
+}
+
+# Installer dari server kantor lewat LAN (jauh lebih cepat dari internet). Mengembalikan $true kalau $out sudah terisi
+# dan terbukti sama dengan hash resmi. Gagal / tidak tersedia / tidak cocok -> $false (pemanggil lanjut ke internet).
+function Ambil-Dari-Server($out) {
+    $info = $null
+    try { $info = Http 'GET' '/installer-info' $null }
+    catch { Info '  Penerima di server tidak terjangkau, installer tidak diambil dari server. Pakai internet.' 'Yellow'; return $false }
+    $teks = ('' + $info.Teks).Trim()
+    $sah = (($info.Kode -eq 200) -and ($teks -match '^ok (\d{1,12}) ([0-9a-f]{64})$'))
+    if (-not $sah) {
+        Info '  Server belum menyediakan installer. Pakai internet.' 'Yellow'
+        return $false
+    }
+    $panjang = [long]$Matches[1]
+    $shaServer = $Matches[2]
+    if ($UbSha256 -and ($shaServer -ine $UbSha256)) {
+        Info ('  Installer di server BUKAN hash resmi UrBackup Client ' + $UbVersi + ', tidak dipakai. Pakai internet.') 'Yellow'
+        return $false
+    }
+    $lan = $out + '.lan'
+    Remove-Item -LiteralPath $lan, ($lan + '.part') -Force -ErrorAction SilentlyContinue
+    try {
+        Info ('  Installer tersedia di server (' + (Ukuran-MB $panjang) + ' MB). Mengunduh lewat LAN ...')
+        Unduh-Berkas ('http://' + $ServerIP + ':' + $PortTerima + '/installer') $lan -HanyaLangsung
+        if ((Get-Item -LiteralPath $lan).Length -ne $panjang) { throw 'ukuran tidak sama dengan yang diumumkan server' }
+        $sha = Sha256-Berkas $lan
+        if ($sha -ine $shaServer) { throw 'SHA256 tidak sama dengan yang diumumkan server' }
+        Move-Item -LiteralPath $lan -Destination $out -Force
+        Info '  Installer dari server terverifikasi (ukuran dan SHA256 cocok).' 'Green'
+        return $true
+    } catch {
+        Info ('  Unduhan dari server gagal: ' + $_.Exception.Message + '. Pakai internet.') 'Yellow'
+        Remove-Item -LiteralPath $lan, ($lan + '.part') -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
+# Dapatkan installer di $out: server kantor (LAN) -> internet -> file yang diunduh sendiri lewat browser.
+# K8_INSTALLER (alamat / file:// lokal) melewati server.
 function Ambil-Installer($out) {
+    if (-not $env:K8_INSTALLER) {
+        if (Ambil-Dari-Server $out) { return }
+    }
     try { Unduh-Berkas $UbInstaller $out; return }
     catch { Info ('  ' + $_.Exception.Message) 'Yellow' }
     Info '  Cara lain: unduh installernya lewat browser dari alamat di atas, lalu ketik lokasi filenya di sini.' 'Yellow'
@@ -475,6 +525,28 @@ function Cek-Exe($berkas) {
     return $kb
 }
 
+# Hash dibandingkan dengan hash resmi; tanda tangan digital dilaporkan. Tidak cocok DAN tanda tangan bukan Valid = tanya dulu.
+function Cek-Keaslian($berkas) {
+    $sha = Sha256-Berkas $berkas
+    $cocok = [bool]($UbSha256 -and ($sha -ieq $UbSha256))
+    $sig = $null
+    try { $sig = Get-AuthenticodeSignature -FilePath $berkas } catch { }
+    $status = ''
+    $penanda = ''
+    if ($sig) {
+        $status = '' + $sig.Status
+        if ($sig.SignerCertificate) { $penanda = ' - ' + $sig.SignerCertificate.Subject }
+    }
+    if ($cocok) { Info ('  SHA256 cocok dengan hash resmi UrBackup Client ' + $UbVersi + '.') 'Green' }
+    else { Info ('  SHA256 file ini ' + $sha + ' berbeda dari hash resmi yang tercatat.') 'Yellow' }
+    if ($sig) { Info ('  Tanda tangan: ' + $status + $penanda) }
+    if ($status -eq 'HashMismatch') { throw 'Tanda tangan rusak (HashMismatch). Install dibatalkan.' }
+    if (-not $cocok -and $status -ne 'Valid') {
+        Info '  File ini tidak bisa diverifikasi (hash tidak sama dan tanda tangan bukan Valid).' 'Yellow'
+        if (-not (Ya-Tidak 'Tetap pasang file ini?')) { throw 'Dibatalkan: installer tidak terverifikasi.' }
+    }
+}
+
 # ---------------- aksi 1: pasang / daftar ----------------
 function Aksi-Pasang($divisi, $nama, [switch]$TanpaInstall) {
     $svc = @(Ub-Layanan)
@@ -487,12 +559,7 @@ function Aksi-Pasang($divisi, $nama, [switch]$TanpaInstall) {
         $kb = Cek-Exe $out
         Info ('  Installer siap: ' + $kb + ' KB')
 
-        $sig = $null
-        try { $sig = Get-AuthenticodeSignature -FilePath $out } catch { }
-        if ($sig) {
-            Info ('  Tanda tangan: ' + $sig.Status)
-            if ($sig.Status -eq 'HashMismatch') { throw 'Tanda tangan rusak (HashMismatch). Install dibatalkan.' }
-        }
+        Cek-Keaslian $out
 
         if ($TanpaInstall) {
             Info '  SIMULASI: unduhan OK. Lewati install dan firewall.' 'Cyan'
